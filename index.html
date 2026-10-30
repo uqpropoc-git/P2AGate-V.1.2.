@@ -35,8 +35,8 @@
         </div>
       </div>
       <div class="flex items-center space-x-2">
-        <span class="px-3 py-1 bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 rounded-full text-xs font-medium flex items-center gap-1.5">
-          <span class="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></span> <span id="mqtt-status-label">MQTT Connected</span>
+        <span class="px-3 py-1 bg-amber-500/10 text-amber-400 border border-amber-500/20 rounded-full text-xs font-medium flex items-center gap-1.5" id="mqtt-badge">
+          <span class="w-2 h-2 rounded-full bg-amber-500 animate-pulse" id="mqtt-dot"></span> <span id="mqtt-status-label">Connecting MQTT...</span>
         </span>
         <button onclick="loadData()" class="p-2 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-lg transition cursor-pointer" title="Refresh Data">
           <i class="fa-solid fa-rotate"></i>
@@ -105,7 +105,7 @@
       <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
         <div class="lg:col-span-2 bg-slate-900 border border-slate-800 rounded-2xl p-5">
           <h3 class="text-base font-semibold text-white mb-4 flex items-center gap-2">
-            <i class="fa-solid fa-chart-area text-sky-500"></i> Statistik Aktivitas TX/RX Harian
+            <i class="fa-solid fa-chart-area text-sky-500"></i> Grafik Aktivitas Realtime
           </h3>
           <div class="h-64 relative">
             <canvas id="activityChart"></canvas>
@@ -234,8 +234,12 @@
 
   <!-- Script Logic -->
   <script>
-    const GAS_URL = "https://script.google.com/macros/s/AKfycbw0YwE_Fg8e4E9herEgTCowEMFQhdr3I4U-jOA9qWF_X7IZZM3SrOrF--0Cwfa36BIZ/exec"; // Masukkan URL GAS Anda
-    const MQTT_BROKER = "wss://broker.hivemq.com:8000/mqtt";
+    const GAS_URL = "https://script.google.com/macros/s/AKfycbw0YwE_Fg8e4E9herEgTCowEMFQhdr3I4U-jOA9qWF_X7IZZM3SrOrF--0Cwfa36BIZ/exec";
+    
+    // Perbaikan Opsi Koneksi WebSocket HiveMQ
+    const MQTT_HOST = "broker.hivemq.com";
+    const MQTT_PORT = 8884; // Port SSL WebSocket HIVEMQ
+    const MQTT_PATH = "/mqtt";
     const MQTT_TOPIC_TELEMETRY = "gateway/duolucnuts/telemetry";
 
     let serialPort = null;
@@ -262,19 +266,41 @@
     }
 
     function initMQTT() {
-      const client = mqtt.connect(MQTT_BROKER);
+      const clientId = 'web_dashboard_' + Math.random().toString(16).substr(2, 8);
+      
+      const client = mqtt.connect(`wss://${MQTT_HOST}:${MQTT_PORT}${MQTT_PATH}`, {
+        clientId: clientId,
+        clean: true,
+        connectTimeout: 4000,
+        reconnectPeriod: 2000,
+      });
+
       client.on('connect', () => {
-        document.getElementById('mqtt-status-label').innerText = "MQTT Live Connected";
+        console.log("MQTT Client Terhubung");
+        document.getElementById('mqtt-status-label').innerText = "MQTT Connected";
+        document.getElementById('mqtt-badge').className = "px-3 py-1 bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 rounded-full text-xs font-medium flex items-center gap-1.5";
+        document.getElementById('mqtt-dot').className = "w-2 h-2 rounded-full bg-emerald-500 animate-pulse";
         client.subscribe(MQTT_TOPIC_TELEMETRY);
       });
+
+      client.on('error', (err) => {
+        console.error("MQTT Error:", err);
+        document.getElementById('mqtt-status-label').innerText = "MQTT Error";
+        document.getElementById('mqtt-badge').className = "px-3 py-1 bg-rose-500/10 text-rose-400 border border-rose-500/20 rounded-full text-xs font-medium flex items-center gap-1.5";
+      });
+
       client.on('message', (topic, message) => {
         if (topic === MQTT_TOPIC_TELEMETRY) {
-          const data = JSON.parse(message.toString());
-          const statusEl = document.getElementById('stat-device-status');
-          statusEl.innerText = data.status;
-          statusEl.className = data.status === 'TX_ACTIVE' ? 'mt-2 text-2xl font-bold text-amber-400 animate-pulse' : 'mt-2 text-2xl font-bold text-emerald-400';
-          document.getElementById('stat-uptime').innerText = data.uptime;
-          document.getElementById('stat-rssi').innerText = data.rssi;
+          try {
+            const data = JSON.parse(message.toString());
+            const statusEl = document.getElementById('stat-device-status');
+            statusEl.innerText = data.status;
+            statusEl.className = data.status === 'TX_ACTIVE' ? 'mt-2 text-2xl font-bold text-amber-400 animate-pulse' : 'mt-2 text-2xl font-bold text-emerald-400';
+            document.getElementById('stat-uptime').innerText = data.uptime || 0;
+            document.getElementById('stat-rssi').innerText = data.rssi || 0;
+          } catch(e) {
+            console.error("Gagal parse JSON MQTT:", e);
+          }
         }
       });
     }
@@ -363,7 +389,7 @@
     }
 
     function loadData() {
-      fetch(`${GAS_URL}?action=getDashboardData`)
+      fetch(`${GAS_URL}?action=getDashboardData`, { redirect: 'follow' })
         .then(res => res.json())
         .then(result => {
           if (result.status === "success") renderDashboard(result.data);
@@ -372,15 +398,17 @@
     }
 
     function renderDashboard(data) {
-      document.getElementById('stat-total-log').innerText = data.logs.length;
-      data.configs.forEach(cfg => {
-        if (cfg.name === 'DEFAULT_FREQ_RX') document.getElementById('stat-freq-rx').innerHTML = `${cfg.value} <span class="text-sm font-normal text-slate-400">MHz</span>`;
-        if (cfg.name === 'DEFAULT_FREQ_TX') document.getElementById('stat-freq-tx').innerHTML = `${cfg.value} <span class="text-sm font-normal text-slate-400">MHz</span>`;
-      });
+      if (data.logs) document.getElementById('stat-total-log').innerText = data.logs.length;
+      if (data.configs) {
+        data.configs.forEach(cfg => {
+          if (cfg.name === 'DEFAULT_FREQ_RX') document.getElementById('stat-freq-rx').innerHTML = `${cfg.value} <span class="text-sm font-normal text-slate-400">MHz</span>`;
+          if (cfg.name === 'DEFAULT_FREQ_TX') document.getElementById('stat-freq-tx').innerHTML = `${cfg.value} <span class="text-sm font-normal text-slate-400">MHz</span>`;
+        });
+      }
 
       let tbody = document.getElementById('log-table-body');
       tbody.innerHTML = "";
-      if (data.logs.length === 0) {
+      if (!data.logs || data.logs.length === 0) {
         tbody.innerHTML = `<tr><td colspan="6" class="py-4 text-center text-slate-500">Belum ada log aktivitas.</td></tr>`;
       } else {
         data.logs.forEach(log => {
@@ -400,32 +428,34 @@
 
       let cfgContainer = document.getElementById('config-form-container');
       cfgContainer.innerHTML = "";
-      data.configs.forEach(cfg => {
-        cfgContainer.innerHTML += `
-          <div class="flex flex-col md:flex-row md:items-center justify-between gap-4 p-4 bg-slate-950/50 border border-slate-800/80 rounded-xl">
-            <div>
-              <h4 class="font-medium text-white text-sm">${cfg.name}</h4>
-              <p class="text-xs text-slate-400">${cfg.desc}</p>
+      if (data.configs) {
+        data.configs.forEach(cfg => {
+          cfgContainer.innerHTML += `
+            <div class="flex flex-col md:flex-row md:items-center justify-between gap-4 p-4 bg-slate-950/50 border border-slate-800/80 rounded-xl">
+              <div>
+                <h4 class="font-medium text-white text-sm">${cfg.name}</h4>
+                <p class="text-xs text-slate-400">${cfg.desc}</p>
+              </div>
+              <div class="flex items-center gap-2">
+                <input type="text" id="cfg-val-${cfg.name}" value="${cfg.value}" class="bg-slate-900 border border-slate-700 rounded-lg px-3 py-1.5 text-sm text-white focus:outline-none focus:border-sky-500">
+                <button onclick="saveConfig('${cfg.name}')" class="px-3 py-1.5 bg-sky-600 hover:bg-sky-500 text-white rounded-lg text-sm transition cursor-pointer">Simpan</button>
+              </div>
             </div>
-            <div class="flex items-center gap-2">
-              <input type="text" id="cfg-val-${cfg.name}" value="${cfg.value}" class="bg-slate-900 border border-slate-700 rounded-lg px-3 py-1.5 text-sm text-white focus:outline-none focus:border-sky-500">
-              <button onclick="saveConfig('${cfg.name}')" class="px-3 py-1.5 bg-sky-600 hover:bg-sky-500 text-white rounded-lg text-sm transition cursor-pointer">Simpan</button>
-            </div>
-          </div>
-        `;
-      });
+          `;
+        });
+      }
     }
 
     function saveConfig(name) {
       let val = document.getElementById(`cfg-val-${name}`).value;
-      fetch(`${GAS_URL}?action=updateConfig&name=${encodeURIComponent(name)}&value=${encodeURIComponent(val)}`)
+      fetch(`${GAS_URL}?action=updateConfig&name=${encodeURIComponent(name)}&value=${encodeURIComponent(val)}`, { redirect: 'follow' })
         .then(res => res.json())
         .then(res => { alert(res.message); loadData(); })
         .catch(err => alert("Gagal menyimpan konfigurasi."));
     }
 
     function runDatabaseSetup() {
-      fetch(`${GAS_URL}?action=setupDatabase`)
+      fetch(`${GAS_URL}?action=setupDatabase`, { redirect: 'follow' })
         .then(res => res.json())
         .then(res => { alert(res.message); loadData(); })
         .catch(err => alert("Gagal setup database."));
@@ -452,129 +482,31 @@
 
     function generateESPCodeText() {
       const code = `/**
- * ESP32 Gateway Firmware - Auto Generated from Dashboard
- * Created by UQ
+ * ESP32 Gateway Firmware - Auto Generated
  */
-
 #include <WiFi.h>
 #include <PubSubClient.h>
-#include <ArduinoJson.h>
-#include <Wire.h>
-#include <Adafruit_GFX.h>
-#include <Adafruit_SSD1306.h>
 
-#define SCREEN_WIDTH 128
-#define SCREEN_HEIGHT 64
-#define OLED_RESET    -1
-Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, OLED_RESET);
-
-const char* ssid = "WIFI_SSID_ANDA";
-const char* password = "WIFI_PASSWORD_ANDA";
+const char* ssid = "WIFI_SSID";
+const char* password = "WIFI_PASSWORD";
 const char* mqtt_server = "broker.hivemq.com";
 const int mqtt_port = 1883;
-const char* mqtt_client_id = "ESP32_Gateway_Duolucnuts_01";
-const char* mqtt_topic_status = "gateway/duolucnuts/status";
 const char* mqtt_topic_telemetry = "gateway/duolucnuts/telemetry";
 
 WiFiClient espClient;
 PubSubClient client(espClient);
 
-const int PTT_PIN = 25;  
-const int COS_PIN = 26;  
-
-unsigned long lastMsgTime = 0;
-const long interval = 2000;
-
-void setup_wifi() {
-  WiFi.begin(ssid, password);
-  while (WiFi.status() != WL_CONNECTED) {
-    delay(500);
-    Serial.print(".");
-  }
-}
-
-void reconnect() {
-  while (!client.connected()) {
-    if (client.connect(mqtt_client_id)) {
-      client.publish(mqtt_topic_status, "ONLINE");
-    } else {
-      delay(5000);
-    }
-  }
-}
-
 void setup() {
   Serial.begin(115200);
-  pinMode(PTT_PIN, OUTPUT);
-  pinMode(COS_PIN, INPUT_PULLUP);
-  digitalWrite(PTT_PIN, LOW);
-
-  if(!display.begin(SSD1306_SWITCHCAPVCC, 0x3C)) {
-    for(;;);
-  }
-  display.clearDisplay();
-  display.setTextSize(1);
-  display.setTextColor(SSD1306_WHITE);
-  
-  setup_wifi();
+  WiFi.begin(ssid, password);
   client.setServer(mqtt_server, mqtt_port);
 }
 
 void loop() {
   if (!client.connected()) {
-    reconnect();
+    client.connect("ESP32_Duolucnuts_Client");
   }
   client.loop();
-
-  // Handle Serial Commands from Dashboard
-  if (Serial.available() > 0) {
-    String cmd = Serial.readStringUntil('\\n');
-    cmd.trim();
-    if (cmd == "REBOOT") {
-      Serial.println("ESP32 Restarting...");
-      ESP.restart();
-    } else if (cmd == "STATUS") {
-      Serial.println("STATUS: ONLINE, IP: " + WiFi.localIP().toString());
-    } else {
-      Serial.println("Unknown command: " + cmd);
-    }
-  }
-
-  bool isReceivingAnalog = (digitalRead(COS_PIN) == LOW);
-
-  if (isReceivingAnalog) {
-    digitalWrite(PTT_PIN, HIGH);
-    updateOLED("RX -> TX ACTIVE", "143.500 MHz", "Sinyal Masuk");
-  } else {
-    digitalWrite(PTT_PIN, LOW);
-    updateOLED("STANDBY / RX", "145.000 MHz", "Menunggu Sinyal");
-  }
-
-  unsigned long now = millis();
-  if (now - lastMsgTime > interval) {
-    lastMsgTime = now;
-    StaticJsonDocument<200> doc;
-    doc["status"] = isReceivingAnalog ? "TX_ACTIVE" : "STANDBY";
-    doc["rssi"] = WiFi.RSSI();
-    doc["uptime"] = millis() / 1000;
-
-    char buffer[256];
-    serializeJson(doc, buffer);
-    client.publish(mqtt_topic_telemetry, buffer);
-  }
-}
-
-void updateOLED(String status, String freq, String info) {
-  display.clearDisplay();
-  display.setCursor(0,0);
-  display.println("=== POC GATEWAY ===");
-  display.setCursor(0,16);
-  display.println("Status: " + status);
-  display.setCursor(0,32);
-  display.println("Freq: " + freq);
-  display.setCursor(0,48);
-  display.println("MQTT: Connected");
-  display.display();
 }`;
       document.getElementById('esp-code-box').innerText = code;
     }
